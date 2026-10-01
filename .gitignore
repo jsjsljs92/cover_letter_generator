@@ -30,3 +30,13 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# AI Coding
+.claude/
+.DS_Store
+
+# Local runtime data (uploads, generated PDFs, SQLite database)
+data/
+
+# Build output
+bin/
