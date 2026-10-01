@@ -187,6 +187,11 @@ func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
 	router := httpapi.NewRouter(httpapi.Dependencies{
 		CoverLetters: handler,
 		Metrics:      registry,
+		CORS: httpapi.CORSConfig{
+			AllowedOrigins:   cfg.HTTP.CORSAllowedOrigins,
+			AllowCredentials: cfg.HTTP.CORSAllowCredentials,
+			MaxAge:           cfg.HTTP.CORSMaxAgeSeconds,
+		},
 	})
 
 	return &App{

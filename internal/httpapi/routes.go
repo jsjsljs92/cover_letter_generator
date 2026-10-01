@@ -31,6 +31,9 @@ func chain(h http.Handler, middlewares ...Middleware) http.Handler {
 type Dependencies struct {
 	CoverLetters *coverletter.Handler
 	Metrics      *obs.Registry
+	// CORS is optional; a zero value denies every cross-origin caller, which
+	// is the safe default for a same-origin deployment.
+	CORS CORSConfig
 }
 
 // NewRouter builds the fully-wrapped HTTP handler.
@@ -59,6 +62,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/", notFound)
 
 	return chain(mux,
+		cors(deps.CORS),
 		requestID(),
 		recoverPanic(),
 		accessLog(),

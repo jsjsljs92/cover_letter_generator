@@ -32,6 +32,10 @@ type CoverLetterResponse struct {
 	Tone     string `json:"tone,omitempty"`
 	Filename string `json:"resume_filename,omitempty"`
 
+	// CandidateName is the name the model attributed the letter to, available
+	// once generation finished.
+	CandidateName string `json:"candidate_name,omitempty"`
+
 	// Outputs, present only once status is completed.
 	CoverLetter *string `json:"cover_letter,omitempty"`
 	PDFURL      string  `json:"pdf_url,omitempty"`
@@ -73,6 +77,7 @@ func NewResponse(record *CoverLetter) CoverLetterResponse {
 		letter := record.CoverLetterText
 		resp.CoverLetter = &letter
 		resp.PDFURL = PDFURLFor(record.ID)
+		resp.CandidateName = record.CandidateName
 	}
 	if v := record.ValidationSummary(); v != nil {
 		resp.Validation = v

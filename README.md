@@ -241,6 +241,9 @@ configuration fails at startup rather than on the first request.
 | `HTTP_WRITE_TIMEOUT` | `30s` | Comfortably exceeds any synchronous request |
 | `HTTP_IDLE_TIMEOUT` | `60s` | |
 | `HTTP_SHUTDOWN_TIMEOUT` | `15s` | Graceful drain window |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated browser origins allowed to call the API |
+| `CORS_ALLOW_CREDENTIALS` | `false` | Cannot be combined with a wildcard origin |
+| `CORS_MAX_AGE_SECONDS` | `600` | Preflight cache lifetime |
 
 ### Storage
 
@@ -341,6 +344,20 @@ Base path `/api/v1`. All responses are JSON. Errors always use one envelope:
 `code` is stable and machine-readable; `message` is written for a human and never
 contains stack traces, SQL, filesystem paths, or provider errors.
 
+### CORS
+
+The frontend is served separately from this API, so the browser needs an explicit
+grant to read responses. Every response carries
+`Access-Control-Allow-Origin` when the request's `Origin` is listed in
+`CORS_ALLOWED_ORIGINS`; an unlisted origin gets no grant header, and the browser
+then refuses to expose the body to the caller's JavaScript.
+
+`OPTIONS` preflights are answered for `GET`, `POST` and `OPTIONS` with
+`Content-Type` and `X-Request-ID` allowed. A wildcard origin (`*`) is supported
+but cannot be combined with `CORS_ALLOW_CREDENTIALS=true` — that combination is
+rejected at startup, because a browser discards the response rather than
+reporting a useful error.
+
 ---
 
 ### `GET /health`
@@ -400,6 +417,7 @@ Polls a generation job.
   "status": "completed",
   "cover_letter": "Dear Hiring Team,\n\n…",
   "pdf_url": "/api/v1/cover-letters/123/pdf",
+  "candidate_name": "Jia Sheng",
   "error_message": "",
   "validation": {
     "valid": true,

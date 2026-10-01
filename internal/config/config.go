@@ -37,6 +37,13 @@ type HTTPConfig struct {
 	ShutdownTimeout   time.Duration
 	// MaxUploadBytes caps the size of an individual multipart upload.
 	MaxUploadBytes int64
+	// CORSAllowedOrigins lists the browser origins permitted to call this API.
+	// A single "*" allows any origin.
+	CORSAllowedOrigins []string
+	// CORSAllowCredentials permits cookies and Authorization headers.
+	CORSAllowCredentials bool
+	// CORSMaxAgeSeconds is how long a browser may cache a preflight result.
+	CORSMaxAgeSeconds int
 }
 
 // DatabaseConfig controls the SQLite connection.
@@ -106,6 +113,11 @@ func Load() (Config, error) {
 			IdleTimeout:       envDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
 			ShutdownTimeout:   envDuration("HTTP_SHUTDOWN_TIMEOUT", 15*time.Second),
 			MaxUploadBytes:    envInt64("MAX_UPLOAD_SIZE", 10<<20), // 10 MiB
+			// Defaults to the Vite dev server, which serves the frontend
+			// separately from this API and therefore needs an explicit grant.
+			CORSAllowedOrigins:   envList("CORS_ALLOWED_ORIGINS", []string{"http://localhost:5173", "http://127.0.0.1:5173"}),
+			CORSAllowCredentials: envBool("CORS_ALLOW_CREDENTIALS", false),
+			CORSMaxAgeSeconds:    envInt("CORS_MAX_AGE_SECONDS", 600),
 		},
 		Database: DatabaseConfig{
 			Path:            envString("DATABASE_PATH", "./data/app.db"),
@@ -167,6 +179,16 @@ func (c *Config) validate() error {
 	if c.HTTP.MaxUploadBytes <= 0 {
 		return fmt.Errorf("config: MAX_UPLOAD_SIZE must be positive")
 	}
+	// The CORS spec forbids pairing a wildcard origin with credentials, and
+	// browsers ignore the response rather than reporting a useful error. Fail
+	// at boot instead, where the message can be acted on.
+	if c.HTTP.CORSAllowCredentials {
+		for _, origin := range c.HTTP.CORSAllowedOrigins {
+			if origin == "*" {
+				return fmt.Errorf("config: CORS_ALLOW_CREDENTIALS cannot be combined with a wildcard CORS_ALLOWED_ORIGINS")
+			}
+		}
+	}
 	if c.JobFetch.MaxHTMLBytes <= 0 {
 		return fmt.Errorf("config: JOB_FETCH_MAX_HTML_BYTES must be positive")
 	}
@@ -198,6 +220,26 @@ func envString(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envList parses a comma-separated environment variable, falling back when it
+// is unset or contains only separators and whitespace.
+func envList(key string, fallback []string) []string {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
 }
 
 func envInt(key string, fallback int) int {
