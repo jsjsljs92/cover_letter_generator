@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"coverletter/internal/ai"
@@ -120,14 +121,7 @@ func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
 
 	provider := o.provider
 	if provider == nil {
-		provider, err = ai.NewGeminiProvider(ctx, ai.GeminiConfig{
-			APIKey:          cfg.AI.APIKey,
-			Model:           cfg.AI.Model,
-			Timeout:         cfg.AI.Timeout,
-			MaxRetries:      cfg.AI.MaxRetries,
-			Temperature:     cfg.AI.Temperature,
-			MaxOutputTokens: cfg.AI.MaxOutputTokens,
-		}, registry, logger)
+		provider, err = createProviderFromConfig(ctx, cfg, registry, logger)
 		if err != nil {
 			_ = database.Close(db)
 			return nil, err
@@ -297,3 +291,106 @@ var _ coverletter.Dispatcher = (*poolDispatcher)(nil)
 
 // unusedTimeGuard keeps the time import meaningful if the file is trimmed.
 var _ = time.Second
+
+// createProviderFromConfig creates an AI provider based on the configured priority.
+// It tries providers in order until one succeeds.
+func createProviderFromConfig(ctx context.Context, cfg config.Config, registry *obs.Registry, logger *slog.Logger) (ai.Provider, error) {
+	var lastErr error
+
+	// If ProviderPriority is set, use that; otherwise fall back to legacy single provider
+	providers := parseProviderPriority(cfg.AI.ProviderPriority)
+	if len(providers) == 0 {
+		// Legacy: single provider
+		providers = []string{cfg.AI.Provider}
+	}
+
+	for _, p := range providers {
+		var provider ai.Provider
+		var err error
+
+		switch strings.ToLower(p) {
+		case "openrouter":
+			if cfg.AI.OpenRouter.APIKey != "" {
+				provider, err = ai.NewOpenRouterProvider(ctx, ai.OpenRouterConfig{
+					APIKey:      cfg.AI.OpenRouter.APIKey,
+					BaseURL:     cfg.AI.OpenRouter.BaseURL,
+					Model:       cfg.AI.OpenRouter.Model,
+					Timeout:     cfg.AI.Timeout,
+					MaxRetries:  cfg.AI.MaxRetries,
+					Temperature: cfg.AI.Temperature,
+					MaxTokens:   cfg.AI.MaxOutputTokens,
+				}, registry, logger)
+			} else {
+				err = fmt.Errorf("OPENROUTER_API_KEY not set")
+			}
+
+		case "gemini":
+			// Check both new and legacy config
+			apiKey := cfg.AI.Gemini.APIKey
+			if apiKey == "" {
+				apiKey = cfg.AI.APIKey // Legacy fallback
+			}
+			model := cfg.AI.Gemini.Model
+			if model == "" {
+				model = cfg.AI.Model // Legacy fallback
+			}
+			if apiKey != "" {
+				provider, err = ai.NewGeminiProvider(ctx, ai.GeminiConfig{
+					APIKey:          apiKey,
+					Model:           model,
+					Timeout:         cfg.AI.Timeout,
+					MaxRetries:      cfg.AI.MaxRetries,
+					Temperature:     cfg.AI.Temperature,
+					MaxOutputTokens: cfg.AI.MaxOutputTokens,
+				}, registry, logger)
+			} else {
+				err = fmt.Errorf("GEMINI_API_KEY not set")
+			}
+
+		case "groq":
+			if cfg.AI.Groq.APIKey != "" {
+				provider, err = ai.NewGroqProvider(ctx, ai.GroqConfig{
+					APIKey:      cfg.AI.Groq.APIKey,
+					BaseURL:     cfg.AI.Groq.BaseURL,
+					Model:       cfg.AI.Groq.Model,
+					Timeout:     cfg.AI.Timeout,
+					MaxRetries:  cfg.AI.MaxRetries,
+					Temperature: cfg.AI.Temperature,
+					MaxTokens:   cfg.AI.MaxOutputTokens,
+				}, registry, logger)
+			} else {
+				err = fmt.Errorf("GROQ_API_KEY not set")
+			}
+
+		default:
+			err = fmt.Errorf("unknown provider %q", p)
+		}
+
+		if err == nil && provider != nil {
+			logger.Info("AI provider initialized", slog.String("provider", p))
+			return provider, nil
+		}
+
+		lastErr = err
+		logger.Warn("Failed to initialize AI provider, trying next",
+			slog.String("provider", p),
+			slog.String("error", err.Error()),
+		)
+	}
+
+	return nil, fmt.Errorf("no AI provider could be initialized (last error: %w)", lastErr)
+}
+
+// parseProviderPriority parses a comma-separated provider priority string.
+// Must match config.parseProviderPriority.
+func parseProviderPriority(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(strings.ToLower(p))
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}

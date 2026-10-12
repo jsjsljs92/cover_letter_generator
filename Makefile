@@ -22,6 +22,11 @@ help:
 run:
 	$(GO) run $(RUN_ENV) ./cmd/server
 
+## run-dev: start the server with a fake AI provider (no API key needed)
+.PHONY: run-dev
+run-dev:
+	GEMINI_API_KEY=dev-fake-key $(GO) run $(RUN_ENV) ./cmd/server-dev
+
 ## build: compile the server binary into bin/
 .PHONY: build
 build:

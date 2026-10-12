@@ -62,6 +62,13 @@ type StorageConfig struct {
 
 // AIConfig controls the model provider.
 type AIConfig struct {
+	// ProviderPriority is a comma-separated list of providers to try in order.
+	// Supported: "openrouter", "gemini", "groq".
+	// First one with a valid API key will be used.
+	ProviderPriority string
+
+	// Legacy single-provider fields (kept for backwards compatibility).
+	// If ProviderPriority is not set, these are used.
 	Provider        string
 	APIKey          string
 	Model           string
@@ -69,6 +76,31 @@ type AIConfig struct {
 	MaxRetries      int
 	Temperature     float32
 	MaxOutputTokens int
+
+	// Per-provider configuration (optional, uses legacy fields as fallback)
+	OpenRouter OpenRouterConfig
+	Gemini     GeminiConfig
+	Groq       GroqConfig
+}
+
+// OpenRouterConfig holds OpenRouter-specific settings.
+type OpenRouterConfig struct {
+	APIKey  string
+	BaseURL string
+	Model   string
+}
+
+// GeminiConfig holds Gemini-specific settings.
+type GeminiConfig struct {
+	APIKey  string
+	Model   string
+}
+
+// GroqConfig holds Groq-specific settings.
+type GroqConfig struct {
+	APIKey  string
+	BaseURL string
+	Model   string
 }
 
 // WorkerConfig controls the background worker pool.
@@ -130,13 +162,28 @@ func Load() (Config, error) {
 			PDFDir:    envString("PDF_DIR", "./data/pdfs"),
 		},
 		AI: AIConfig{
-			Provider:        envString("AI_PROVIDER", "gemini"),
-			APIKey:          envString("GEMINI_API_KEY", ""),
-			Model:           envString("GEMINI_MODEL", "gemini-2.5-flash"),
-			Timeout:         envDuration("AI_TIMEOUT", 60*time.Second),
-			MaxRetries:      envInt("AI_MAX_RETRIES", 2),
-			Temperature:     float32(envFloat("AI_TEMPERATURE", 0.4)),
-			MaxOutputTokens: envInt("AI_MAX_OUTPUT_TOKENS", 8192),
+			ProviderPriority: envString("AI_PROVIDER_PRIORITY", "openrouter,gemini,groq"),
+			Provider:         envString("AI_PROVIDER", "gemini"),
+			APIKey:           envString("GEMINI_API_KEY", ""),
+			Model:            envString("GEMINI_MODEL", "gemini-3.5-flash"),
+			Timeout:          envDuration("AI_TIMEOUT", 60*time.Second),
+			MaxRetries:       envInt("AI_MAX_RETRIES", 2),
+			Temperature:      float32(envFloat("AI_TEMPERATURE", 0.4)),
+			MaxOutputTokens:  envInt("AI_MAX_OUTPUT_TOKENS", 8192),
+			OpenRouter: OpenRouterConfig{
+				APIKey:  envString("OPENROUTER_API_KEY", ""),
+				BaseURL: envString("OPENROUTER_BASE_URL", ""),
+				Model:   envString("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+			},
+			Gemini: GeminiConfig{
+				APIKey: envString("GEMINI_API_KEY", ""),
+				Model:  envString("GEMINI_MODEL", "gemini-3.5-flash"),
+			},
+			Groq: GroqConfig{
+				APIKey:  envString("GROQ_API_KEY", ""),
+				BaseURL: envString("GROQ_BASE_URL", ""),
+				Model:   envString("GROQ_MODEL", "openai/gpt-oss-120b"),
+			},
 		},
 		Worker: WorkerConfig{
 			Count:     envInt("WORKER_COUNT", 2),
@@ -167,13 +214,37 @@ func Load() (Config, error) {
 }
 
 func (c *Config) validate() error {
-	switch c.AI.Provider {
-	case "gemini":
-		if c.AI.APIKey == "" {
-			return fmt.Errorf("config: GEMINI_API_KEY must be set when AI_PROVIDER=gemini")
+	// If ProviderPriority is set, validate that at least one provider has an API key
+	if c.AI.ProviderPriority != "" {
+		providers := parseProviderPriority(c.AI.ProviderPriority)
+		hasValidProvider := false
+		for _, p := range providers {
+			if c.providerHasAPIKey(p) {
+				hasValidProvider = true
+				break
+			}
 		}
-	default:
-		return fmt.Errorf("config: unsupported AI_PROVIDER %q", c.AI.Provider)
+		if !hasValidProvider {
+			return fmt.Errorf("config: no valid provider in AI_PROVIDER_PRIORITY %q has an API key set", c.AI.ProviderPriority)
+		}
+	} else {
+		// Legacy single-provider validation
+		switch c.AI.Provider {
+		case "gemini":
+			if c.AI.APIKey == "" {
+				return fmt.Errorf("config: GEMINI_API_KEY must be set when AI_PROVIDER=gemini")
+			}
+		case "openrouter":
+			if c.AI.OpenRouter.APIKey == "" {
+				return fmt.Errorf("config: OPENROUTER_API_KEY must be set when AI_PROVIDER=openrouter")
+			}
+		case "groq":
+			if c.AI.Groq.APIKey == "" {
+				return fmt.Errorf("config: GROQ_API_KEY must be set when AI_PROVIDER=groq")
+			}
+		default:
+			return fmt.Errorf("config: unsupported AI_PROVIDER %q", c.AI.Provider)
+		}
 	}
 
 	if c.HTTP.MaxUploadBytes <= 0 {
@@ -300,4 +371,31 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// parseProviderPriority parses a comma-separated provider priority string.
+func parseProviderPriority(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(strings.ToLower(p))
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// providerHasAPIKey checks if a provider has its API key configured.
+func (c *Config) providerHasAPIKey(provider string) bool {
+	switch provider {
+	case "openrouter":
+		return c.AI.OpenRouter.APIKey != ""
+	case "gemini":
+		return c.AI.Gemini.APIKey != "" || c.AI.APIKey != "" // Legacy fallback
+	case "groq":
+		return c.AI.Groq.APIKey != ""
+	default:
+		return false
+	}
 }

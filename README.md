@@ -138,7 +138,7 @@ terminal state.
 | `internal/coverletter` | The application service, status machine, HTTP handlers, DTOs, GORM repository |
 | `internal/job` | URL validation, SSRF-guarded fetching, HTML → job description |
 | `internal/resume` | PDF validation, text extraction, storage |
-| `internal/ai` | Five-stage agent, provider interface, Gemini adapter, prompts |
+| `internal/ai` | Five-stage agent, provider interface and Gemini, Groq and OpenRouter adapters |
 | `internal/pdf` | Deterministic rendering (go-pdf/fpdf) |
 | `internal/worker` | Bounded background task pool |
 | `internal/storage` | Local filesystem storage with atomic writes and key validation |
@@ -161,7 +161,7 @@ decision, is in [`docs/architecture.md`](docs/architecture.md).
 | HTTP | **`net/http` stdlib** | The requirements allow a framework only if genuinely justified. Four endpoints, two of which stream a file. `net/http`'s `ServeMux` supports method-and-path patterns natively, so a framework would add a dependency and not remove code. |
 | ORM | GORM v2 | Requested. Also provides `AutoMigrate` for tests and a clean repository seam. |
 | Database | SQLite (WAL) | Requested. Right size for this workload: reads dominate, writes are serialised by the status transitions. Connection pool capped at 1 writer. |
-| AI | Gemini via `google.golang.org/genai` | Requested. Confined to one file. |
+| AI | Gemini, Groq and OpenRouter | Provider adapters share one interface; select them with environment configuration. |
 | PDF render | `github.com/go-pdf/fpdf` | Requested a suitable library. Pure Go, built-in fonts (no font assets to ship), byte-deterministic with a fixed creation date. |
 | PDF text extract | `github.com/ledongthuc/pdf` | Pure Go, so parsing does not require cgo. |
 | HTML parse | `golang.org/x/net/html` | Stdlib-adjacent, spec-compliant, with charset detection. |
@@ -186,7 +186,8 @@ packages.
 ## 4. Local setup
 
 **Requirements:** Go 1.26+, a C toolchain (Xcode CLT or build-essential — the
-SQLite driver needs cgo), and a Gemini API key.
+SQLite driver needs cgo). A Gemini API key is required for production; a fake
+provider is available for local testing without any key.
 
 ```bash
 # Check the toolchain. CGO_ENABLED must be 1 or the SQLite driver will not build.
@@ -197,25 +198,35 @@ go version
 go mod download
 ```
 
-Get an API key from [Google AI Studio](https://aistudio.google.com/apikey), then:
+### Production (real AI provider)
+
+Get an API key for at least one configured provider, then:
 
 ```bash
 cp .env.example .env
-# edit .env and set GEMINI_API_KEY
+# edit .env and set the API key for the provider you want to use
 ```
-
-Verify:
 
 ```bash
 make check    # go vet + gofmt
 make test     # full suite with -race
-make run      # starts on :8080
+make run      # starts on :8080 with the first configured provider
+```
+
+### Development (fake provider, no API key)
+
+For local testing without an API key, use the scripted fake provider:
+
+```bash
+make run-dev   # starts on :8080 with deterministic fake responses
 ```
 
 ```bash
 curl -s localhost:8080/health
 # {"status":"ok"}
 ```
+
+The fake provider returns realistic responses for all five AI pipeline stages (job analysis → resume analysis → match → generation → validation), so you can test the full flow end-to-end without network calls or API costs.
 
 ---
 
@@ -229,7 +240,10 @@ configuration fails at startup rather than on the first request.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | — | **Required.** Startup fails without it. Never logged, never committed. |
+| `AI_PROVIDER_PRIORITY` | `openrouter,gemini,groq` | Provider order; the first listed provider with a configured key is selected. |
+| `OPENROUTER_API_KEY` | — | Optional. Required only when OpenRouter is selected. |
+| `GEMINI_API_KEY` | — | Optional. Required only when Gemini is selected. |
+| `GROQ_API_KEY` | — | Optional. Required only when Groq is selected. |
 
 ### HTTP
 
@@ -261,8 +275,10 @@ configuration fails at startup rather than on the first request.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `AI_PROVIDER` | `gemini` | Only `gemini` implemented |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | |
+| `AI_PROVIDER` | `gemini` | Legacy single-provider selection when `AI_PROVIDER_PRIORITY` is empty |
+| `OPENROUTER_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` | |
+| `GEMINI_MODEL` | `gemini-3.5-flash` | |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | |
 | `AI_TIMEOUT` | `60s` | Per model call |
 | `AI_MAX_RETRIES` | `2` | Transient failures only |
 | `AI_TEMPERATURE` | `0.4` | Stages may override |
@@ -301,7 +317,8 @@ configuration fails at startup rather than on the first request.
 ## 6. Running the service
 
 ```bash
-make run                      # loads .env if present
+make run                      # loads .env if present, real Gemini
+make run-dev                  # fake provider, no API key needed
 go run ./cmd/server           # plain environment variables
 make build && ./bin/server    # compiled binary
 ```
@@ -319,7 +336,8 @@ given a bounded window to finish.
 | Target | Purpose |
 | --- | --- |
 | `make help` | List targets |
-| `make run` | Start the server |
+| `make run` | Start the server (real Gemini) |
+| `make run-dev` | Start with fake provider (no API key) |
 | `make build` | Build `bin/server` |
 | `make test` | Full suite with `-race` |
 | `make test-short` | Suite without `-race` |
@@ -583,9 +601,11 @@ an opaque unmarshal error. A letter under 200 runes is rejected as too short.
 
 ### Provider isolation
 
-`AIProvider` is an interface; `gemini.go` is the only file importing the Gemini
-SDK. Adding Ollama means writing one more `Generate` implementation and setting
-`AI_PROVIDER` — the agent, the service, and the handlers do not change. The
+`AIProvider` is an interface; Gemini, Groq and OpenRouter each have a provider
+adapter. `AI_PROVIDER_PRIORITY` selects the first provider with a configured
+key at startup; it does not automatically fail over after a generation error.
+The agent, the service, and the handlers do not change when adding another
+provider. The
 provider handles per-call timeouts and retries with jittered exponential backoff
 capped at 8s, and classifies failures: 429, 5xx, transport errors, and empty
 responses are retried; 4xx, safety blocks, and cancellations are not.
@@ -674,8 +694,8 @@ addresses without touching the network.
 
 ### Secrets
 
-- No API key is hard-coded. The key comes from `GEMINI_API_KEY` and the process
-  fails fast at startup if it is missing.
+- No API key is hard-coded. Provider keys come from environment variables; the
+  process fails fast at startup if none of the configured providers has a key.
 - Keys are never logged. Configuration errors name the *variable*, never its
   value.
 - `.env` is gitignored; `.env.example` carries no real values.
